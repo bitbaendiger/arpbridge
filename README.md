@@ -7,7 +7,7 @@ Small tool to check if your switching, monitoring and/or intrusion detection sys
 ## Usage
 ~~~ {.bash}
 gcc arpbridge.c -o arpbridge
-./arpbridge [-i interface] [-b {bridge-mac}] {remote-mac} {gateway-mac} {remote-ip} {gateway-ip}
+./arpbridge [-h] [-d] [-i interface] [-m|-b {bridge-mac}] {remote-mac} {gateway-mac} {remote-ip} {gateway-ip}
 ~~~
 
 `arpbridge` tries to hook into the public visible communication between two entities by sending gratious ARP to both of them and acting as a man in the middle. Each entity is redirected to a virtual MAC in the middle and traffic is forwarded transparently between them.
