@@ -127,7 +127,14 @@ void cleanup (int sig) {
  * @return void
  **/
 void usage () {
-  fprintf (stderr, "Usage: arpbridge [-i interface] [-b bridge-mac] remote-mac gateway-mac remote-ip gateway-ip\n");
+  fprintf (stderr, "Usage: arpbridge [-h] [-d] [-i interface] [-m|-b bridge-mac] remote-mac gateway-mac remote-ip gateway-ip\n\n");
+  fprintf (stderr, "  -h             Print this information\n");
+  fprintf (stderr, "  -d             Don't forward incoming traffic\n");
+  fprintf (stderr, "  -i interface   Listen on this interface\n");
+  fprintf (stderr, "  -m             Use MAC-Address of our interface as middle\n");
+  fprintf (stderr, "  -b mac         Use this MAC-Address as middle\n");
+  fprintf (stderr, "\n");
+  
   exit (1);
 }
 // }}}
@@ -180,6 +187,7 @@ void getIP (uint8_t *ip, char *src) {
 int main (int argc, char *argv[]) {
   int c;
   uint8_t autoMac = 0;
+  uint8_t autoForward = 1;
   fd_set rfds;
   struct timeval tv;
   struct ifreq ifr;
@@ -188,8 +196,11 @@ int main (int argc, char *argv[]) {
   c = rand_r (&c);
   memcpy (virtualMac + 2, &c, 4);
   
-  while ((c = getopt (argc, argv, "mb:i:h?VVVV")) != -1) {
+  while ((c = getopt (argc, argv, "dmb:i:h?VVVV")) != -1) {
     switch (c) {
+      case 'd':
+        autoForward = 0;
+        break;
       case 'i':
         interface = strdup (optarg);
         break;
@@ -256,8 +267,14 @@ int main (int argc, char *argv[]) {
   else if (memcmp (virtualMac, ifr.ifr_hwaddr.sa_data, 6) == 0)
     autoMac = 1;
   
+  if (!autoForward)
+    fprintf (stderr, "WARNING: Not forwarding traffic between entities!\n");
+  
   if (autoMac)
-    fprintf (stderr, "WARNING: Using MAC of our own interface. USE WITH CAUTION AND ONLY IF YOU REALLY KNOW WHAT YOU ARE DOING\n\n");
+    fprintf (stderr, "WARNING: Using MAC of our own interface. USE WITH CAUTION AND ONLY IF YOU REALLY KNOW WHAT YOU ARE DOING!\n");
+  
+  if (!autoForward || autoMac)
+    fprintf (stderr, "\n");
   
   // Do some informal output
   fprintf (stderr, "Interface:   %s (Index %u)\n", interface, sa.sll_ifindex);
@@ -292,20 +309,44 @@ int main (int argc, char *argv[]) {
       continue;
     
     // Read the packet
-    char buf[1501];
+    uint8_t buf[1501];
     size_t length;
     
-    length = read (sock, &buf, sizeof (buf));
-    
+    if ((length = read (sock, &buf, sizeof (buf))) < 0) {
+      perror ("read");
+      
+      continue;
+    } else if (length == 0) {
+      fprintf (stderr, "Socket was closed, goodbye!\n");
+      cleanup (SIGTERM);
+    } else if (length < 14) {
+      fprintf (stderr, "Short read\n");
+      
+      continue;
+    }
+      
     // Check whether to capture traffic
     uint8_t *to = (uint8_t *)buf;
     uint8_t *from = to + 6;
     
-    if (memcmp (to, virtualMac, 6) != 0)
+    if (!autoForward || (memcmp (to, virtualMac, 6) != 0))
       continue;
     
+    uint8_t fromRemote  = (memcmp (from, remoteMac, 6) == 0);
+    uint8_t fromGateway = (memcmp (from, gatewayMac, 6) == 0);
+    
+    // Check destination-ip if using local MAC
+    if (autoMac && (buf [12] == 0x08) && (buf [13] == 0x00) && (length > 33)) {
+      /* uint8_t *src = to + 26; */
+      uint8_t *dst = to + 30;
+      
+      // Skip traffic from gateway not originating remote ip
+      if (fromGateway && (memcmp (dst, remoteIP, 4) != 0))
+        continue;
+    }
+    
     // Capture traffic gateway->remote
-    if (memcmp (from, gatewayMac, 6) == 0) {
+    if (fromGateway) {
       // Rewrite
       memcpy (from, virtualMac, 6);
       memcpy (to, remoteMac, 6);
@@ -313,7 +354,7 @@ int main (int argc, char *argv[]) {
       // Forward
       sendPacket (buf, length);
     // Capture traffic remote->gateway
-    } else if (memcmp (from, remoteMac, 6) == 0) {
+    } else if (fromRemote) {
       // Rewrite
       memcpy (from, virtualMac, 6);
       memcpy (to, gatewayMac, 6);
