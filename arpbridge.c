@@ -250,11 +250,13 @@ int main (int argc, char *argv[]) {
     exit (1);
   }
   
-  // Use MAC of interface if requested
+  // Use MAC of interface if requested or check if that mac is being used
   if (autoMac)
     memcpy (virtualMac, ifr.ifr_hwaddr.sa_data, 6);
+  else if (memcmp (virtualMac, ifr.ifr_hwaddr.sa_data, 6) == 0)
+    autoMac = 1;
   
-  if (autoMac || memcmp (virtualMac, ifr.ifr_hwaddr.sa_data, 6) == 0)
+  if (autoMac)
     fprintf (stderr, "WARNING: Using MAC of our own interface. USE WITH CAUTION AND ONLY IF YOU REALLY KNOW WHAT YOU ARE DOING\n\n");
   
   // Do some informal output
@@ -295,12 +297,15 @@ int main (int argc, char *argv[]) {
     
     length = read (sock, &buf, sizeof (buf));
     
-    // Capture traffic gateway->remote
+    // Check whether to capture traffic
     uint8_t *to = (uint8_t *)buf;
     uint8_t *from = to + 6;
     
-    if ((memcmp (to, virtualMac, 6) == 0) &&
-        (memcmp (from, gatewayMac, 6) == 0)) {
+    if (memcmp (to, virtualMac, 6) != 0)
+      continue;
+    
+    // Capture traffic gateway->remote
+    if (memcmp (from, gatewayMac, 6) == 0) {
       // Rewrite
       memcpy (from, virtualMac, 6);
       memcpy (to, remoteMac, 6);
@@ -308,8 +313,7 @@ int main (int argc, char *argv[]) {
       // Forward
       sendPacket (buf, length);
     // Capture traffic remote->gateway
-    } else if ((memcmp (to, virtualMac, 6) == 0) &&  
-               (memcmp (from, remoteMac, 6) == 0)) {
+    } else if (memcmp (from, remoteMac, 6) == 0) {
       // Rewrite
       memcpy (from, virtualMac, 6);
       memcpy (to, gatewayMac, 6);
