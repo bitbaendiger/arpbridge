@@ -12,17 +12,17 @@
 
 #include <linux/if_packet.h>
 #include <linux/if_ether.h>
+#include <linux/if_arp.h>
 #include <linux/sockios.h>
-#include <net/if.h>
 #include <netinet/in.h>
 
 /* Our network-socket */
 int sock = -1;
 struct sockaddr_ll sa;
 
-uint8_t virtualMac [6] = "\x02\x00\x00\x00\x00\x00";
-uint8_t remoteMac [6]  = "\x00\x00\x00\x00\x00\x00";
-uint8_t gatewayMac [6] = "\x00\x00\x00\x00\x00\x00";
+uint8_t virtualMac [6] = { 2, 0, 0, 0, 0, 0 };
+uint8_t remoteMac [6]  = { 0, 0, 0, 0, 0, 0 };
+uint8_t gatewayMac [6] = { 0, 0, 0, 0, 0, 0 };
 uint8_t remoteIP [4]   = { 0, 0, 0, 0 };
 uint8_t gatewayIP [4]  = { 0, 0, 0, 0 };
 char *interface        = "eth0";
@@ -179,6 +179,7 @@ void getIP (uint8_t *ip, char *src) {
  **/
 int main (int argc, char *argv[]) {
   int c;
+  uint8_t autoMac = 0;
   fd_set rfds;
   struct timeval tv;
   struct ifreq ifr;
@@ -187,10 +188,13 @@ int main (int argc, char *argv[]) {
   c = rand_r (&c);
   memcpy (virtualMac + 2, &c, 4);
   
-  while ((c = getopt (argc, argv, "b:i:h?VVVV")) != -1) {
+  while ((c = getopt (argc, argv, "mb:i:h?VVVV")) != -1) {
     switch (c) {
       case 'i':
         interface = strdup (optarg);
+        break;
+      case 'm':
+        autoMac = 1;
         break;
       case 'b':
         getMAC (virtualMac, optarg);
@@ -212,20 +216,13 @@ int main (int argc, char *argv[]) {
   getIP ((uint8_t *)&remoteIP, argv [2]);
   getIP ((uint8_t *)&gatewayIP, argv [3]);
   
-  fprintf (stderr, "Interface:   %s\n", interface);
-  fprintf (stderr, "Remote MAC:  %02x:%02x:%02x:%02x:%02x:%02x\n", remoteMac [0], remoteMac [1], remoteMac [2], remoteMac [3], remoteMac [4], remoteMac [5]);
-  fprintf (stderr, "Gateway MAC: %02x:%02x:%02x:%02x:%02x:%02x\n", gatewayMac [0], gatewayMac [1], gatewayMac [2], gatewayMac [3], gatewayMac [4], gatewayMac [5]);
-  fprintf (stderr, "Virtual MAC: %02x:%02x:%02x:%02x:%02x:%02x\n", virtualMac [0], virtualMac [1], virtualMac [2], virtualMac [3], virtualMac [4], virtualMac [5]);
-  fprintf (stderr, "Remote IP:   %u.%u.%u.%u\n", remoteIP [0], remoteIP [1], remoteIP [2], remoteIP [3]);
-  fprintf (stderr, "Gateway IP:  %u.%u.%u.%u\n", gatewayIP [0], gatewayIP [1], gatewayIP [2], gatewayIP [3]);
-  
   // Prepare the I/O
   memset (&sa, 0, sizeof (sa));
   sa.sll_family    = AF_PACKET;
   sa.sll_protocol  = htons (ETH_P_ALL);
   
   // Create listener
-  if ((sock = socket (PF_PACKET, SOCK_RAW, sa.sll_protocol)) < 0) {
+  if ((sock = socket (AF_PACKET, SOCK_RAW, sa.sll_protocol)) < 0) {
     perror ("socket");
     
     return errno;
@@ -238,8 +235,35 @@ int main (int argc, char *argv[]) {
   if (ioctl (sock, SIOCGIFINDEX, &ifr) < 0) {
     perror ("get ifindex");
     exit (1);
-  } else
-    sa.sll_ifindex = ifr.ifr_ifindex;
+  }
+  
+  sa.sll_ifindex = ifr.ifr_ifindex;
+  
+  // Check type of interface
+  if (ioctl (sock, SIOCGIFHWADDR, &ifr) < 0) {
+    perror ("get ifmac");
+    exit (1);
+  }
+  
+  if (ifr.ifr_hwaddr.sa_family != ARPHRD_ETHER) {
+    fprintf (stderr, "Interface must be of type ethernet\n");
+    exit (1);
+  }
+  
+  // Use MAC of interface if requested
+  if (autoMac)
+    memcpy (virtualMac, ifr.ifr_hwaddr.sa_data, 6);
+  
+  if (autoMac || memcmp (virtualMac, ifr.ifr_hwaddr.sa_data, 6) == 0)
+    fprintf (stderr, "WARNING: Using MAC of our own interface. USE WITH CAUTION AND ONLY IF YOU REALLY KNOW WHAT YOU ARE DOING\n\n");
+  
+  // Do some informal output
+  fprintf (stderr, "Interface:   %s (Index %u)\n", interface, sa.sll_ifindex);
+  fprintf (stderr, "Remote MAC:  %02x:%02x:%02x:%02x:%02x:%02x\n", remoteMac [0], remoteMac [1], remoteMac [2], remoteMac [3], remoteMac [4], remoteMac [5]);
+  fprintf (stderr, "Gateway MAC: %02x:%02x:%02x:%02x:%02x:%02x\n", gatewayMac [0], gatewayMac [1], gatewayMac [2], gatewayMac [3], gatewayMac [4], gatewayMac [5]);
+  fprintf (stderr, "Virtual MAC: %02x:%02x:%02x:%02x:%02x:%02x\n", virtualMac [0], virtualMac [1], virtualMac [2], virtualMac [3], virtualMac [4], virtualMac [5]);
+  fprintf (stderr, "Remote IP:   %u.%u.%u.%u\n", remoteIP [0], remoteIP [1], remoteIP [2], remoteIP [3]);
+  fprintf (stderr, "Gateway IP:  %u.%u.%u.%u\n", gatewayIP [0], gatewayIP [1], gatewayIP [2], gatewayIP [3]);
   
   // Setup signal-handlers
   signal (SIGALRM, renew);
