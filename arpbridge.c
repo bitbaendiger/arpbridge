@@ -18,6 +18,7 @@
 
 /* Our network-socket */
 int sock = -1;
+uint8_t promisc = 0;
 struct sockaddr_ll sa;
 
 uint8_t virtualMac [6] = { 2, 0, 0, 0, 0, 0 };
@@ -114,6 +115,18 @@ void cleanup (int sig) {
   sendGARP (gatewayMac, remoteMac, gatewayIP, remoteIP);
   sendGARP (remoteMac, gatewayMac, remoteIP, gatewayIP);
   
+  // Remove promiscous mode
+  if (!promisc) {
+    struct ifreq ifr;
+    
+    if (ioctl (sock, SIOCGIFFLAGS, &ifr) == - 1)
+      exit (0);
+    
+    ifr.ifr_flags &= ~IFF_PROMISC;
+    
+    ioctl (sock, SIOCSIFFLAGS, &ifr);
+  }
+  
   // Do a clean exit
   exit (0);
 }
@@ -127,11 +140,11 @@ void cleanup (int sig) {
  * @return void
  **/
 void usage () {
-  fprintf (stderr, "Usage: arpbridge [-h] [-d] [-i interface] [-m|-b bridge-mac] remote-mac gateway-mac remote-ip gateway-ip\n\n");
+  fprintf (stderr, "Usage: arpbridge [-h] [-d] [-i interface] [-l|-b bridge-mac] remote-mac gateway-mac remote-ip gateway-ip\n\n");
   fprintf (stderr, "  -h             Print this information\n");
   fprintf (stderr, "  -d             Don't forward incoming traffic\n");
   fprintf (stderr, "  -i interface   Listen on this interface\n");
-  fprintf (stderr, "  -m             Use MAC-Address of our interface as middle\n");
+  fprintf (stderr, "  -l             Use MAC-Address of our interface as middle\n");
   fprintf (stderr, "  -b mac         Use this MAC-Address as middle\n");
   fprintf (stderr, "\n");
   
@@ -197,7 +210,7 @@ int main (int argc, char *argv[]) {
   c = rand_r (&c);
   memcpy (virtualMac + 2, &c, 4);
   
-  while ((c = getopt (argc, argv, "dmb:i:h?VVVV")) != -1) {
+  while ((c = getopt (argc, argv, "dlb:i:h?VVVV")) != -1) {
     switch (c) {
       case 'd':
         autoForward = 0;
@@ -205,7 +218,7 @@ int main (int argc, char *argv[]) {
       case 'i':
         interface = strdup (optarg);
         break;
-      case 'm':
+      case 'l':
         autoMac = 1;
         break;
       case 'b':
@@ -252,8 +265,9 @@ int main (int argc, char *argv[]) {
   sa.sll_ifindex = ifr.ifr_ifindex;
   
   // Check type of interface
-  if (ioctl (sock, SIOCGIFHWADDR, &ifr) < 0) {
+  if (ioctl (sock, SIOCGIFHWADDR, &ifr) == -1) {
     perror ("get ifmac");
+    
     exit (1);
   }
   
@@ -276,6 +290,24 @@ int main (int argc, char *argv[]) {
   
   if (!autoForward || autoMac)
     fprintf (stderr, "\n");
+  
+  // Put device into promiscous mode
+  if (ioctl(sock, SIOCGIFFLAGS, &ifr) == - 1) {
+    perror ("Get interface flags");
+    
+    exit (1);
+  }
+  
+  if ((ifr.ifr_flags & IFF_PROMISC) == 0) {
+    ifr.ifr_flags |= IFF_PROMISC;
+    
+    if (ioctl (sock, SIOCSIFFLAGS, &ifr) == -1) {
+      perror ("Set promiscous mode");
+      
+      exit (1);
+    }
+  } else
+    promisc = 1;
   
   // Do some informal output
   fprintf (stderr, "Interface:   %s (Index %u)\n", interface, sa.sll_ifindex);
