@@ -191,6 +191,7 @@ int main (int argc, char *argv[]) {
   fd_set rfds;
   struct timeval tv;
   struct ifreq ifr;
+  struct sockaddr_ll ss;
   
   // Parse arguments
   c = rand_r (&c);
@@ -311,8 +312,9 @@ int main (int argc, char *argv[]) {
     // Read the packet
     uint8_t buf[1501];
     size_t length;
+    socklen_t slen = sizeof (ss);
     
-    if ((length = read (sock, &buf, sizeof (buf))) < 0) {
+    if ((length = recvfrom (sock, &buf, sizeof (buf), 0, (struct sockaddr *)&ss, &slen)) == -1) {
       perror ("read");
       
       continue;
@@ -324,8 +326,11 @@ int main (int argc, char *argv[]) {
       
       continue;
     }
-      
+    
     // Check whether to capture traffic
+    if (ss.sll_ifindex != sa.sll_ifindex)
+      continue;
+    
     uint8_t *to = (uint8_t *)buf;
     uint8_t *from = to + 6;
     
