@@ -141,9 +141,10 @@ void cleanup (int sig) {
  * @return void
  **/
 void usage () {
-  fprintf (stderr, "Usage: arpbridge [-h] [-d] [-i interface] [-l|-b bridge-mac] remote-mac gateway-mac remote-ip gateway-ip\n\n");
+  fprintf (stderr, "Usage: arpbridge [-h] [-d] [-i interface] [-l|-b bridge-mac] [-r [mac]] [-p port] remote-mac gateway-mac remote-ip gateway-ip\n\n");
   fprintf (stderr, "  -h             Print this information\n");
   fprintf (stderr, "  -d             Don't forward incoming traffic\n");
+  fprintf (stderr, "  -r [mac]       Don't drop traffic, but forward to local (or specified) mac\n");
   fprintf (stderr, "  -p port        Don't forward traffic for a given port (logic inverted when used with -d)\n");
   fprintf (stderr, "  -i interface   Listen on this interface\n");
   fprintf (stderr, "  -l             Use MAC-Address of our interface as middle\n");
@@ -203,8 +204,10 @@ int main (int argc, char *argv[]) {
   int c;
   uint8_t autoMac = 0;
   uint8_t autoForward = 1;
+  uint8_t autoRedirect = 0;
   uint16_t filterPortSize = 0;
   uint16_t *filterPorts = 0;
+  uint8_t localMac [6];
   fd_set rfds;
   struct timeval tv;
   struct ifreq ifr;
@@ -214,7 +217,7 @@ int main (int argc, char *argv[]) {
   c = rand_r (&c);
   memcpy (virtualMac + 2, &c, 4);
   
-  while ((c = getopt (argc, argv, "b:di:hlp:?VVVV")) != -1) {
+  while ((c = getopt (argc, argv, "b:di:hlp:r::?VVVV")) != -1) {
     switch (c) {
       case 'b':
         getMAC (virtualMac, optarg);
@@ -235,6 +238,14 @@ int main (int argc, char *argv[]) {
         }
         
         filterPorts [filterPortSize - 1] = atoi (optarg);
+        
+        break;
+      case 'r':
+        if (optarg) {
+          autoRedirect = 2;
+          getMAC (localMac, optarg);
+        } else
+          autoRedirect = 1;
         
         break;
       case 'h':
@@ -288,6 +299,9 @@ int main (int argc, char *argv[]) {
     fprintf (stderr, "Interface must be of type ethernet\n");
     exit (1);
   }
+  
+  if (autoRedirect != 2)
+    memcpy (localMac, ifr.ifr_hwaddr.sa_data, 6);
   
   // Use MAC of interface if requested or check if that mac is being used
   if (autoMac)
@@ -379,10 +393,9 @@ int main (int argc, char *argv[]) {
     uint8_t *to = (uint8_t *)buf;
     uint8_t *from = to + 6;
     
-    if ((!autoForward && !filterPortSize) || (memcmp (to, virtualMac, 6) != 0))
+    if ((!autoForward && !filterPortSize && !autoRedirect) || (memcmp (to, virtualMac, 6) != 0))
       continue;
     
-    uint8_t fromRemote  = (memcmp (from, remoteMac, 6) == 0);
     uint8_t fromGateway = (memcmp (from, gatewayMac, 6) == 0);
     
     // Check destination-ip if using local MAC
@@ -411,8 +424,19 @@ int main (int argc, char *argv[]) {
           break;
         }
       
-      if ((autoForward && !off) || (!autoForward && off))
+      if ((autoForward && !off) || (!autoForward && off)) {
+        if (!autoRedirect)
+          continue;
+        
+        // Rewrite
+        memcpy (from, virtualMac, 6);
+        memcpy (to, localMac, 6);
+        
+        // Forward
+        sendPacket (buf, length);
+        
         continue;
+      }
     }
     
     // Capture traffic gateway->remote
@@ -424,10 +448,18 @@ int main (int argc, char *argv[]) {
       // Forward
       sendPacket (buf, length);
     // Capture traffic remote->gateway
-    } else if (fromRemote) {
+    } else if (memcmp (from, remoteMac, 6) == 0) {
       // Rewrite
       memcpy (from, virtualMac, 6);
       memcpy (to, gatewayMac, 6);
+      
+      // Forward
+      sendPacket (buf, length);
+    // Capture traffic local->virtual
+    } else if ((memcmp (from, localMac, 6) == 0) && (memcmp (to, virtualMac, 6) == 0)) {
+      // Rewrite
+      memcpy (from, virtualMac, 6);
+      memcpy (to, remoteMac, 6);
       
       // Forward
       sendPacket (buf, length);
