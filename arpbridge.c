@@ -9,6 +9,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 
 #include <linux/if_packet.h>
 #include <linux/if_ether.h>
@@ -97,7 +98,7 @@ void renew (int sig) {
   sendGARP (virtualMac, gatewayMac, remoteIP, gatewayIP);
   
   // Do it again in future
-  alarm (10);
+  alarm (5);
 }
 // }}}
 
@@ -143,6 +144,7 @@ void usage () {
   fprintf (stderr, "Usage: arpbridge [-h] [-d] [-i interface] [-l|-b bridge-mac] remote-mac gateway-mac remote-ip gateway-ip\n\n");
   fprintf (stderr, "  -h             Print this information\n");
   fprintf (stderr, "  -d             Don't forward incoming traffic\n");
+  fprintf (stderr, "  -p port        Don't forward traffic for a given port (logic inverted when used with -d)\n");
   fprintf (stderr, "  -i interface   Listen on this interface\n");
   fprintf (stderr, "  -l             Use MAC-Address of our interface as middle\n");
   fprintf (stderr, "  -b mac         Use this MAC-Address as middle\n");
@@ -201,6 +203,8 @@ int main (int argc, char *argv[]) {
   int c;
   uint8_t autoMac = 0;
   uint8_t autoForward = 1;
+  uint16_t filterPortSize = 0;
+  uint16_t *filterPorts = 0;
   fd_set rfds;
   struct timeval tv;
   struct ifreq ifr;
@@ -210,8 +214,11 @@ int main (int argc, char *argv[]) {
   c = rand_r (&c);
   memcpy (virtualMac + 2, &c, 4);
   
-  while ((c = getopt (argc, argv, "dlb:i:h?VVVV")) != -1) {
+  while ((c = getopt (argc, argv, "b:di:hlp:?VVVV")) != -1) {
     switch (c) {
+      case 'b':
+        getMAC (virtualMac, optarg);
+        break;
       case 'd':
         autoForward = 0;
         break;
@@ -221,8 +228,14 @@ int main (int argc, char *argv[]) {
       case 'l':
         autoMac = 1;
         break;
-      case 'b':
-        getMAC (virtualMac, optarg);
+      case 'p':
+        if ((filterPorts = (uint16_t *)realloc (filterPorts, sizeof (uint16_t) * ++filterPortSize)) == 0) {
+          perror ("Failed to allocate memory");
+          exit (1);
+        }
+        
+        filterPorts [filterPortSize - 1] = atoi (optarg);
+        
         break;
       case 'h':
       default:
@@ -282,13 +295,13 @@ int main (int argc, char *argv[]) {
   else if (memcmp (virtualMac, ifr.ifr_hwaddr.sa_data, 6) == 0)
     autoMac = 1;
   
-  if (!autoForward)
+  if (!autoForward && !filterPortSize)
     fprintf (stderr, "WARNING: Not forwarding traffic between entities!\n");
   
   if (autoMac)
     fprintf (stderr, "WARNING: Using MAC of our own interface. USE WITH CAUTION AND ONLY IF YOU REALLY KNOW WHAT YOU ARE DOING!\n");
   
-  if (!autoForward || autoMac)
+  if ((!autoForward && !filterPortSize) || autoMac)
     fprintf (stderr, "\n");
   
   // Put device into promiscous mode
@@ -366,7 +379,7 @@ int main (int argc, char *argv[]) {
     uint8_t *to = (uint8_t *)buf;
     uint8_t *from = to + 6;
     
-    if (!autoForward || (memcmp (to, virtualMac, 6) != 0))
+    if ((!autoForward && !filterPortSize) || (memcmp (to, virtualMac, 6) != 0))
       continue;
     
     uint8_t fromRemote  = (memcmp (from, remoteMac, 6) == 0);
@@ -379,6 +392,26 @@ int main (int argc, char *argv[]) {
       
       // Skip traffic from gateway not originating remote ip
       if (fromGateway && (memcmp (dst, remoteIP, 4) != 0))
+        continue;
+    }
+    
+    // Check wheter to filter the port
+    // TODO: This is only IPv4 at the moment
+    // TODO: Distinguish between TCP/UDP (buf [23] == 0x06 / buf [23] == 0x11)
+    if (filterPortSize && (buf [12] == 0x08) && (buf [13] == 0x00) && (length > 33)) {
+      uint8_t *hdr = to + 14 + ((buf [14] & 0x0F) * 4);
+      uint16_t sport = (hdr [0] << 8) | hdr [1];
+      uint16_t dport = (hdr [2] << 8) | hdr [3];
+      uint16_t off;
+      
+      for (off = 0; off < filterPortSize; off++)
+        if ((filterPorts [off] == sport) || (filterPorts [off] == dport)) {
+          off = 0;
+          
+          break;
+        }
+      
+      if ((autoForward && !off) || (!autoForward && off))
         continue;
     }
     
